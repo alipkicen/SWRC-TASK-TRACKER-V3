@@ -1,0 +1,189 @@
+-- One-time setup (optional)
+CREATE DATABASE IF NOT EXISTS request_portal
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_0900_ai_ci;
+USE request_portal;
+
+-- Main requests table
+CREATE TABLE IF NOT EXISTS requests (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+
+  username VARCHAR(100) NOT NULL,
+  request_type ENUM('Sampling Request','Lot Transfer','Shipment Request','Scrap Request') NOT NULL,
+  task_priority ENUM('P1','P2','P3') NOT NULL,
+  date_of_request DATETIME NOT NULL,
+
+  facility_location VARCHAR(255) NULL,
+  receiver_name VARCHAR(255) NULL,
+  qawr_number VARCHAR(100) NULL,
+  jira_link VARCHAR(255) NULL,
+  lot_location VARCHAR(255) NULL,
+  attention_to VARCHAR(255) NULL,
+  returnable TINYINT(1) NULL,
+  domestic_international ENUM('Domestic','International') NULL,
+  shipping_address TEXT NULL,
+
+  -- Sampling-only metadata (nullable for other types)
+  sampling_type VARCHAR(100) NULL,
+  qr_date DATETIME NULL,
+  project_name VARCHAR(255) NULL,
+
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_request_type (request_type),
+  INDEX idx_task_priority (task_priority),
+  INDEX idx_date_of_request (date_of_request)
+) ENGINE=InnoDB;
+
+-- Lots for Lot Transfer / Shipment / Scrap
+CREATE TABLE IF NOT EXISTS lots (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  request_id BIGINT UNSIGNED NOT NULL,
+  lot_id VARCHAR(100) NOT NULL,
+  units_quantity INT NULL,
+  serial_number VARCHAR(100) NULL,
+
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_lots_request_id (request_id),
+  INDEX idx_lots_lot_id (lot_id),
+  CONSTRAINT fk_lots_request
+    FOREIGN KEY (request_id) REFERENCES requests(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- Per-lot details for Sampling Request
+CREATE TABLE IF NOT EXISTS sampling_lots (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  request_id BIGINT UNSIGNED NOT NULL,
+  lot_id VARCHAR(100) NOT NULL,
+  unit_quantity INT NOT NULL,
+  reliability_test VARCHAR(100) NOT NULL,
+  test_condition VARCHAR(255) NOT NULL,
+  attribute_to_tag VARCHAR(255) NOT NULL,
+
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_sampling_lots_request_id (request_id),
+  INDEX idx_sampling_lots_lot_id (lot_id),
+  CONSTRAINT fk_sampling_lots_request
+    FOREIGN KEY (request_id) REFERENCES requests(id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+---------------------------------------------------------------------------------------
+
+-- Ensure requests has these columns (Sampling-specific)
+ALTER TABLE requests
+  ADD COLUMN sampling_type VARCHAR(100) NULL AFTER shipping_address,
+  ADD COLUMN qr_date DATETIME NULL AFTER sampling_type,
+  ADD COLUMN project_name VARCHAR(255) NULL AFTER qr_date;
+
+-- Create sampling_lots for per-lot Sampling details
+CREATE TABLE IF NOT EXISTS sampling_lots (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_id BIGINT NOT NULL,
+  lot_id VARCHAR(100) NOT NULL,
+  unit_quantity INT NOT NULL,
+  reliability_test VARCHAR(100) NOT NULL,
+  test_condition VARCHAR(255) NOT NULL,
+  attribute_to_tag VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_sampling_lots_request
+    FOREIGN KEY (request_id) REFERENCES requests(id)
+    ON DELETE CASCADE
+);
+
+---------------------------------------------------------------------------------------
+-- Current status lives on `requests`
+ALTER TABLE requests
+  ADD COLUMN status ENUM('New','In Progress','Completed','Issue') NOT NULL DEFAULT 'New' AFTER project_name,
+  ADD COLUMN executor VARCHAR(100) NULL AFTER status,
+  ADD COLUMN started_at DATETIME NULL AFTER executor,
+  ADD COLUMN completed_at DATETIME NULL AFTER started_at,
+  ADD COLUMN issue_note TEXT NULL AFTER completed_at;
+
+-- Optional: keep an audit trail of status changes
+CREATE TABLE IF NOT EXISTS request_status_history (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  request_id BIGINT UNSIGNED NOT NULL,
+  old_status ENUM('New','In Progress','Completed','Issue') NULL,
+  new_status ENUM('New','In Progress','Completed','Issue') NOT NULL,
+  executor VARCHAR(100) NULL,
+  note TEXT NULL,
+  changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE,
+  INDEX (request_id), INDEX (new_status), INDEX (changed_at)
+);
+-------------------------------------------------------------------------------------
+
+-- Count detail rows per request (for quick KPIs)
+CREATE OR REPLACE VIEW v_request_detail_counts AS
+SELECT
+  r.id AS request_id,
+  r.request_type,
+  COALESCE(l.cnt, 0) AS lots_count,
+  COALESCE(s.cnt, 0) AS sampling_lots_count
+FROM requests r
+LEFT JOIN (
+  SELECT request_id, COUNT(*) cnt FROM lots GROUP BY request_id
+) l ON l.request_id = r.id
+LEFT JOIN (
+  SELECT request_id, COUNT(*) cnt FROM sampling_lots GROUP BY request_id
+) s ON s.request_id = r.id;
+
+-- Flattened request view for dashboards
+CREATE OR REPLACE VIEW v_requests_for_bi AS
+SELECT
+  r.id,
+  r.username,
+  r.request_type,
+  r.task_priority,
+  r.status,
+  r.executor,
+  r.date_of_request,
+  r.created_at,
+  r.started_at,
+  r.completed_at,
+  r.qr_date,
+  dc.lots_count,
+  dc.sampling_lots_count,
+  TIMESTAMPDIFF(HOUR, r.created_at, r.completed_at) AS cycle_time_hours
+FROM requests r
+LEFT JOIN v_request_detail_counts dc ON dc.request_id = r.id;
+---------------------------------------------------------------------
+-- Detail counts per request (for KPIs)
+CREATE OR REPLACE VIEW v_request_detail_counts AS
+SELECT
+  r.id AS request_id,
+  r.request_type,
+  COALESCE(l.cnt, 0) AS lots_count,
+  COALESCE(s.cnt, 0) AS sampling_lots_count
+FROM requests r
+LEFT JOIN (SELECT request_id, COUNT(*) cnt FROM lots GROUP BY request_id) l USING (request_id)
+LEFT JOIN (SELECT request_id, COUNT(*) cnt FROM sampling_lots GROUP BY request_id) s USING (request_id);
+
+-- Flattened request fact table for BI
+CREATE OR REPLACE VIEW v_requests_for_bi AS
+SELECT
+  r.id,
+  r.username,
+  r.request_type,
+  r.task_priority,
+  r.status,
+  r.executor,
+  r.date_of_request,
+  r.created_at,
+  r.started_at,
+  r.completed_at,
+  r.qr_date,
+  dc.lots_count,
+  dc.sampling_lots_count,
+  TIMESTAMPDIFF(HOUR, r.created_at, r.completed_at) AS cycle_time_hours
+FROM requests r
+LEFT JOIN v_request_detail_counts dc ON dc.request_id = r.id;
+--------------------------------------------------------------------------------------
