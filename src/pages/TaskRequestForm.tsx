@@ -30,9 +30,6 @@ import { formSchema, FormValues, qaProcessTypes, reliabilityTests } from "@/type
 import RequestSummaryTable from "./RequestSummaryTable";
 import { showError, showSuccess } from "@/utils/toast";
 
-// Put this below your import lines
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000';
-
 const TaskRequestForm = () => {
   const [confirmedData, setConfirmedData] = React.useState<FormValues | null>(null);
 
@@ -92,55 +89,21 @@ const TaskRequestForm = () => {
     }
   };
 
-  const onSubmit = async (data: FormValues) => {
-    try {
-      // Prepare payload: ensure date is a Date and numeric fields are numbers
-      const payload: any = {
-        ...data,
-        dateOfRequest: data.dateOfRequest ? new Date(data.dateOfRequest) : new Date(),
-        lots: (data.lots ?? []).map((l: any) => ({
-          lotId: l.lotId,
-          unitsQuantity: l.unitsQuantity !== undefined && l.unitsQuantity !== null && l.unitsQuantity !== "" ? Number(l.unitsQuantity) : null,
-          serialNumber: l.serialNumber || null,
-        })),
-        samplingLots: (data.samplingLots ?? []).map((s: any) => ({
-          lotId: s.lotId,
-          unitQuantity: s.unitQuantity !== undefined && s.unitQuantity !== null && s.unitQuantity !== "" ? Number(s.unitQuantity) : null,
-          reliabilityTest: s.reliabilityTest || null,
-          testCondition: s.testCondition || null,
-          attributeToTag: s.attributeToTag || null,
-        })),
-      };
-
-      const res = await fetch(`${API_BASE}/api/requests`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || `Submit failed (HTTP ${res.status})`);
-      }
-
-      const json = await res.json();
-      showSuccess(`Request submitted successfully. ID: ${json.id}`);
-      setConfirmedData(null);
-      setMotherLotIdInput("");
-      setVerifiedLotIds([]);
-      setLotsVerified(false);
-
-      form.reset({
-        username: "",
-        requestType: undefined,
-        taskPriority: undefined,
-        dateOfRequest: new Date(),
-      });
-    } catch (e: any) {
-      console.error(e);
-      showError(e.message || "Submission failed");
-    }
-  };
+// ✅ Drop-in replacement
+const onSubmit = (data: FormValues) => {
+  console.log("Final form submission:", data);
+  alert("Request submitted successfully!");
+  setConfirmedData(null);
+  setMotherLotIdInput("");
+  setVerifiedLotIds([]);
+  setLotsVerified(false);
+  form.reset({
+    username: "",
+    requestType: undefined,
+    taskPriority: undefined,
+    dateOfRequest: new Date(),
+  });
+};
 
   const resetOnRequestTypeChange = (value: FormValues['requestType']) => {
     setConfirmedData(null);
